@@ -1,20 +1,26 @@
 # kafka-advanced
 
-Production-grade Apache Kafka microservices covering advanced concepts:
-Idempotent Producer, Partitioning, Retry, Dead Letter Topic, Kafka Streams, Schema Registry, and Transactions.
+Production-grade Apache Kafka microservices covering all major advanced concepts across three phases:
+Idempotent Producer, Partitioning, Retry, DLT, Kafka Streams, Schema Registry + Avro, Consumer Lag,
+Kafka Transactions, Kafka Connect, and SSL/SASL Security.
 
 ---
 
 ## Services
 
-| Service | Port | Concept | Status |
+| Service | Port | Concept | Phase |
 |---|---|---|---|
 | [base-domain](./base-domain/) | — | Shared DTOs & Enums | ✅ Phase 1 |
-| [order-service](./order-service/) | 8081 | Idempotent Producer, Partition by key | ✅ Phase 1 |
-| [payment-service](./payment-service/) | 8082 | Retry 3x + Dead Letter Topic + PostgreSQL | ✅ Phase 1 |
-| [shipping-service](./shipping-service/) | 8083 | Global Error Handler | ✅ Phase 1 |
-| [dlt-handler-service](./dlt-handler-service/) | 8085 | DLT Consumer + Failure Alerting | ✅ Phase 1 |
-| audit-service | 8084 | Kafka Streams — real-time aggregation | ⬜ Phase 2 |
+| [order-service](./order-service/) | 8081 | Idempotent Producer, Partition by key, Transactions | ✅ Phase 1 + 3 |
+| [payment-service](./payment-service/) | 8082 | Retry 3x + DLT + PostgreSQL + Consumer Lag | ✅ Phase 1 + 2 |
+| [shipping-service](./shipping-service/) | 8083 | Global Error Handler + Consumer Lag | ✅ Phase 1 + 2 |
+| [dlt-handler-service](./dlt-handler-service/) | 8085 | DLT Consumer + Consumer Lag | ✅ Phase 1 + 2 |
+| [audit-service](./audit-service/) | 8084 | Kafka Streams — real-time aggregation | ✅ Phase 2 |
+| [avro-service](./avro-service/) | 8086 | Schema Registry + Avro serialization | ✅ Phase 2 |
+| [kafka-connect](./kafka-connect/) | 8083* | JDBC Sink Connector — topic → PostgreSQL | ✅ Phase 3 |
+| [security-config](./security-config/) | — | SASL/PLAIN authentication | ✅ Phase 3 |
+
+*Kafka Connect REST API port. Does not conflict with shipping-service (8083) since Connect runs in Docker.
 
 ---
 
@@ -23,19 +29,23 @@ Idempotent Producer, Partitioning, Retry, Dead Letter Topic, Kafka Streams, Sche
 ```
 [REST Client]
       │
+      │  POST /api/v1/orders
       ▼
 order-service (8081)
 Idempotent Producer
 Partition by customerId
+Transactional Producer (Phase 3)
       │
       ▼
 [ Kafka: order-events — 3 partitions ]
       │
-      ├──────────────────────────────┐──────────────────────────────┐
+      ├──────────────────────────────┬──────────────────────────────┐
       ▼                              ▼                              ▼
-payment-service (8082)    shipping-service (8083)         audit-service (8084)
-Retry 3x + DLT            Global Error Handler            Kafka Streams
-Save to PostgreSQL                                        [Phase 2]
+payment-service (8082)    shipping-service (8083)       audit-service (8084)
+Retry 3x + DLT            Global Error Handler          Kafka Streams
+Save to PostgreSQL         Consumer Lag API              KStream aggregation
+Consumer Lag API                                         Order count / Revenue
+read_committed                                           → derived topics
       │
       │ on failure after 3 retries
       ▼
@@ -44,25 +54,39 @@ Save to PostgreSQL                                        [Phase 2]
       ▼
 dlt-handler-service (8085)
 Log + Alert + Manual intervention
+Consumer Lag API
+
+[ Kafka: avro-order-events ]
+      │
+      ▼
+avro-service (8086)        ← produces AND consumes Avro binary messages
+Schema Registry (8091)     ← stores + versions Avro schemas
+
+[ Kafka: order-events ]
+      │
+      ▼
+kafka-connect (8083)       ← JDBC Sink: writes messages to PostgreSQL table
+PostgreSQL → order_events_sink table
 ```
 
 ---
 
 ## Kafka Concepts Covered
 
-| # | Concept | Service | Description |
+| # | Concept | Service | Phase |
 |---|---|---|---|
-| 1 | Idempotent Producer | order-service | No duplicate messages on retry |
-| 2 | Partition by Key | order-service | Message order guaranteed per customer |
-| 3 | Retry + Backoff | payment-service | 3 retries: 1s → 2s → 4s |
-| 4 | Dead Letter Topic | payment-service | Failed messages go to DLT after retries |
-| 5 | DLT Consumer | dlt-handler-service | Handles failed messages, alerts ops |
-| 6 | Global Error Handler | shipping-service | Centralized error handling for all listeners |
-| 7 | Kafka Streams | audit-service | Real-time aggregation (Phase 2) |
-| 8 | Schema Registry + Avro | all | Replace JSON with Avro (Phase 2) |
-| 9 | Kafka Transactions | order + payment | Exactly-once guarantee (Phase 3) |
-| 10 | Kafka Connect | — | DB sink connector (Phase 3) |
-| 11 | SSL/SASL Security | all | Broker auth (Phase 3) |
+| 1 | Idempotent Producer | order-service | Phase 1 |
+| 2 | Partition by Key | order-service | Phase 1 |
+| 3 | Retry + Backoff | payment-service | Phase 1 |
+| 4 | Dead Letter Topic | payment-service | Phase 1 |
+| 5 | DLT Consumer | dlt-handler-service | Phase 1 |
+| 6 | Global Error Handler | shipping-service | Phase 1 |
+| 7 | Kafka Streams | audit-service | Phase 2 |
+| 8 | Consumer Lag Monitoring | payment, shipping, dlt-handler | Phase 2 |
+| 9 | Schema Registry + Avro | avro-service | Phase 2 |
+| 10 | Kafka Transactions | order-service | Phase 3 |
+| 11 | Kafka Connect | kafka-connect | Phase 3 |
+| 12 | SSL/SASL Security | security-config | Phase 3 |
 
 ---
 
@@ -71,28 +95,41 @@ Log + Alert + Manual intervention
 ### Step 1 — Start infrastructure
 
 ```bash
+cd /Users/mohammadmateen/kafka/kafka-advanced
 docker compose up -d
 ```
 
-Starts: Kafka, Zookeeper, Kafka UI, PostgreSQL, Elasticsearch, Logstash, Kibana, Zipkin
+Starts: Kafka, Zookeeper, Schema Registry, Kafka UI, Kafka Connect, PostgreSQL, Elasticsearch, Logstash, Kibana, Zipkin
 
-### Step 2 — Build all services
+### Step 2 — Build shared library
 
 ```bash
-cd base-domain        && mvn clean install -q && cd ..
-cd order-service      && mvn clean install -q && cd ..
-cd payment-service    && mvn clean install -q && cd ..
-cd shipping-service   && mvn clean install -q && cd ..
-cd dlt-handler-service && mvn clean install -q && cd ..
+mvn clean install -q -f base-domain/pom.xml
 ```
 
-### Step 3 — Start all services (5 terminals)
+### Step 3 — Build all services
 
 ```bash
-java -jar order-service/target/order-service-1.0.0.jar
-java -jar payment-service/target/payment-service-1.0.0.jar
-java -jar shipping-service/target/shipping-service-1.0.0.jar
-java -jar dlt-handler-service/target/dlt-handler-service-1.0.0.jar
+for svc in order-service payment-service shipping-service dlt-handler-service audit-service avro-service; do
+  mvn clean install -DskipTests -q -f $svc/pom.xml && echo "✅ $svc"
+done
+```
+
+### Step 4 — Start services (separate terminals)
+
+```bash
+java -jar order-service/target/order-service-1.0.0.jar          # 8081
+java -jar payment-service/target/payment-service-1.0.0.jar      # 8082
+java -jar shipping-service/target/shipping-service-1.0.0.jar    # 8083
+java -jar dlt-handler-service/target/dlt-handler-service-1.0.0.jar # 8085
+java -jar audit-service/target/audit-service-1.0.0.jar          # 8084
+java -jar avro-service/target/avro-service-1.0.0.jar            # 8086
+```
+
+### Step 5 — Register Kafka Connect sink connector
+
+```bash
+bash kafka-connect/register-connector.sh
 ```
 
 ---
@@ -113,49 +150,63 @@ curl -X POST http://localhost:8081/api/v1/orders \
   }'
 ```
 
-Expected: Payment processed → saved to DB → shipment scheduled
-
----
-
 ### Retry + DLT Demo (price = 1 triggers failure)
 
 ```bash
 curl -X POST http://localhost:8081/api/v1/orders \
   -H "Content-Type: application/json" \
-  -d '{
-    "customerId": "CUST-002",
-    "productId": "PROD-102",
-    "productName": "Fail Test",
-    "quantity": 1,
-    "price": 1
-  }'
+  -d '{"customerId":"CUST-002","productName":"Fail Test","quantity":1,"price":1}'
 ```
 
 Expected: payment-service retries 3x → message goes to DLT → dlt-handler-service logs error
 
----
+### Kafka Transactions Demo
 
-### Partition Test (same customer = same partition)
+```bash
+curl -X POST http://localhost:8081/api/v1/orders/transactional \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"CUST-001","productName":"Laptop","quantity":1,"price":1299.99}'
+```
 
-Send 3 orders with same `customerId` — all will go to the same Kafka partition.
-Check Kafka UI → Topics → order-events → Messages to verify.
+Expected: both `order-events` AND `order-confirmed-events` topics receive messages atomically.
+
+### Avro Demo
+
+```bash
+curl -X POST http://localhost:8086/api/avro/orders \
+  -H "Content-Type: application/json" \
+  -d '{"customerId":"CUST-001","productName":"Laptop","quantity":1,"price":"1299.99"}'
+
+# Verify schema registered:
+curl http://localhost:8091/subjects
+```
+
+### Consumer Lag Check
+
+```bash
+curl http://localhost:8082/api/consumer-lag   # payment-service
+curl http://localhost:8083/api/consumer-lag   # shipping-service
+curl http://localhost:8085/api/consumer-lag   # dlt-handler-service
+```
 
 ---
 
 ## Infrastructure URLs
 
-| Tool | URL |
-|---|---|
-| Kafka UI | http://localhost:8080 |
-| Kibana | http://localhost:5601 |
-| Zipkin | http://localhost:9411 |
-| Elasticsearch | http://localhost:9200 |
-| PostgreSQL | localhost:5432 (postgres/postgres) |
+| Tool | URL | Purpose |
+|---|---|---|
+| Kafka UI | http://localhost:8080 | Topics, consumer groups, Schema Registry |
+| Schema Registry | http://localhost:8091 | Avro schema storage |
+| Kafka Connect | http://localhost:8083 | Connector management REST API |
+| Kibana | http://localhost:5601 | Log dashboard |
+| Zipkin | http://localhost:9411 | Distributed tracing |
+| Elasticsearch | http://localhost:9200 | Log storage |
+| PostgreSQL | localhost:5432 (postgres/postgres) | payment records, sink table |
 
 ---
 
 ## Design Documents
 
-- [DESIGN.md](./DESIGN.md) — Full HLD and LLD
+- [DESIGN.md](./DESIGN.md) — Full HLD and LLD for all phases
 - [ARCHITECTURE.md](./ARCHITECTURE.md) — Architecture diagrams
 - [CLAUDE.md](./CLAUDE.md) — Session context for Claude Code

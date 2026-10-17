@@ -8,8 +8,9 @@
 
 kafka-advanced is a distributed event-driven system that processes e-commerce orders
 across multiple microservices using Apache Kafka as the message backbone.
-It demonstrates production-grade Kafka patterns: idempotency, retry, dead letter topics,
-Kafka Streams, schema registry, and transactions.
+It demonstrates production-grade Kafka patterns across three phases:
+idempotency, retry, dead letter topics, Kafka Streams, consumer lag monitoring,
+schema registry + Avro, Kafka transactions, Kafka Connect, and SSL/SASL security.
 
 ---
 
@@ -272,18 +273,55 @@ DltKafkaConsumer
 
 ### Service: audit-service (Phase 2 — Kafka Streams)
 
-#### Planned Class Diagram
+#### Class Diagram
 ```
-KafkaStreamsConfig
-└── @Bean KStream<String, OrderEventDTO>
-    ├── stream from order-events topic
-    ├── groupByKey (customerId)
-    ├── count() → KTable<String, Long>  ← orders per customer
-    └── toStream().to(order-counts topic)
+AuditServiceApplication
+└── @EnableKafkaStreams  ← activates Kafka Streams engine in Spring
 
-OrderCountConsumer
-└── @KafkaListener(topic=order-counts)
-    └── logs real-time order count per customer
+KafkaStreamsConfig
+└── @Bean(DEFAULT_STREAMS_CONFIG_BEAN_NAME) KafkaStreamsConfiguration
+    ├── APPLICATION_ID_CONFIG = "audit-service-streams"
+    ├── BOOTSTRAP_SERVERS_CONFIG
+    ├── DEFAULT_KEY_SERDE = Serdes.String()
+    ├── DEFAULT_VALUE_SERDE = Serdes.String()
+    └── COMMIT_INTERVAL_MS_CONFIG = 1000
+
+OrderAuditStream
+└── @Bean KStream<String, String> orderAuditStream(StreamsBuilder)
+    │
+    ├── Stream 1: Order count per customer
+    │   KStream.stream(order-events)
+    │     .peek(log received)
+    │     .groupByKey(customerId)
+    │     .count(Materialized.as("order-count-store"))  → KTable<String, Long>
+    │     .toStream()
+    │     .mapValues("Total orders: " + count)
+    │     .to(order-count-per-customer)
+    │
+    └── Stream 2: Revenue per product
+        KStream.stream(order-events)
+          .mapValues(json → "productName:price")
+          .filter(value != null)
+          .selectKey(productName)
+          .groupByKey()
+          .aggregate("0", (k, price, total) → total.add(price),
+                     Materialized.as("revenue-store"))
+          .toStream()
+          .mapValues("Total revenue: " + amount)
+          .to(revenue-per-product)
+```
+
+#### State Stores
+```
+order-count-store  → RocksDB (persistent), keyed by customerId
+revenue-store      → RocksDB (persistent), keyed by productName
+Both stores survive service restart — Kafka Streams replays from last checkpoint
+```
+
+#### Output Topics
+```
+order-count-per-customer  ← key=customerId, value="Total orders: 5"
+revenue-per-product       ← key=productName, value="Total revenue: 6499.95"
 ```
 
 ---
@@ -319,15 +357,236 @@ com.basedomain.enums
 
 ---
 
+---
+
+### Service: Consumer Lag Monitoring (Phase 2 — payment, shipping, dlt-handler)
+
+#### Class Diagram (same pattern in all three services)
+```
+KafkaAdminConfig
+└── @Bean AdminClient
+    └── AdminClient.create(Map.of(BOOTSTRAP_SERVERS_CONFIG, bootstrapServers))
+
+ConsumerLagService
+└── getConsumerLag()
+    ├── adminClient.listConsumerGroupOffsets(groupId)
+    │     → committedOffsets: Map<TopicPartition, OffsetAndMetadata>
+    ├── adminClient.listOffsets(partitions → OffsetSpec.latest())
+    │     → endOffsets: Map<TopicPartition, Long>
+    └── lag = endOffset − committedOffset  (per partition)
+        → returns: {groupId, status, totalLag, partitions[...]}
+
+ConsumerLagController
+└── GET /api/consumer-lag → ConsumerLagService.getConsumerLag()
+```
+
+#### Response Structure
+```json
+{
+  "groupId": "payment-service-group",
+  "status": "HEALTHY | LAGGING | NO_COMMITTED_OFFSETS | ERROR",
+  "totalLag": 0,
+  "partitions": [
+    {"topic": "order-events", "partition": 0, "currentOffset": 42,
+     "endOffset": 42, "lag": 0, "status": "CAUGHT_UP"}
+  ]
+}
+```
+
+---
+
+### Service: avro-service (Phase 2 — Schema Registry + Avro)
+
+#### Class Diagram
+```
+order-event.avsc (Avro schema file)
+└── avro-maven-plugin (compile phase)
+    └── generates: target/generated-sources/avro/
+        ├── OrderEvent.java   ← SpecificRecord with builder
+        └── OrderEventType.java ← Avro enum
+
+AvroKafkaProducerConfig
+└── @Bean ProducerFactory<String, OrderEvent>
+    ├── VALUE_SERIALIZER = KafkaAvroSerializer.class
+    └── SCHEMA_REGISTRY_URL = http://localhost:8091
+
+AvroKafkaConsumerConfig
+└── @Bean ConcurrentKafkaListenerContainerFactory
+    ├── VALUE_DESERIALIZER = KafkaAvroDeserializer.class
+    ├── SCHEMA_REGISTRY_URL = http://localhost:8091
+    └── SPECIFIC_AVRO_READER = true  ← returns typed OrderEvent (not GenericRecord)
+
+AvroOrderProducer
+└── sendOrderEvent(customerId, productName, quantity, price)
+    ├── OrderEvent.newBuilder()...build()
+    └── kafkaTemplate.send(topic, customerId, event)
+
+AvroOrderConsumer
+└── @KafkaListener(topics="avro-order-events",
+                   containerFactory="avroKafkaListenerContainerFactory")
+    └── consume(ConsumerRecord<String, OrderEvent>)
+        └── logs all fields of the deserialized OrderEvent
+
+AvroOrderController
+└── POST /api/avro/orders → AvroOrderProducer.sendOrderEvent()
+```
+
+#### Wire Format
+```
+[0x00][schema ID — 4 bytes][avro binary payload]
+  ↑ magic byte   ↑ Schema Registry   ↑ Avro-encoded fields
+```
+
+---
+
+### Service: Kafka Transactions (Phase 3 — order-service)
+
+#### Class Diagram
+```
+OrderController
+└── POST /api/v1/orders/transactional
+    └── TransactionalOrderService.sendTransactionally(OrderDTO)
+
+TransactionalOrderService
+└── sendTransactionally(OrderDTO)
+    └── kafkaTemplate.executeInTransaction(ops -> {
+            ops.send(orderEventsTopic, customerId, placedEvent)      // topic 1
+            ops.send(orderConfirmedTopic, customerId, confirmedEvent) // topic 2
+            return true
+        })
+        // Either BOTH committed or NEITHER visible
+```
+
+#### Producer Config (application.yml)
+```yaml
+spring.kafka.producer:
+  transaction-id-prefix: order-tx-   # enables transactional producer
+  properties:
+    enable.idempotence: true          # included automatically with transactions
+    acks: all
+```
+
+#### Consumer Config — payment-service
+```yaml
+spring.kafka.consumer.properties:
+  isolation.level: read_committed     # only reads committed transactions
+  # Without this: consumer sees messages from aborted transactions
+```
+
+#### Transaction Lifecycle
+```
+beginTransaction()
+  └── send to order-events         [UNCOMMITTED — not visible to read_committed consumers]
+  └── send to order-confirmed-events [UNCOMMITTED]
+commitTransaction()
+  └── BOTH messages become visible atomically
+  └── read_committed consumers now receive both messages
+
+OR if failure:
+abortTransaction()
+  └── BOTH messages permanently skipped
+```
+
+---
+
+### Kafka Connect (Phase 3 — JDBC Sink Connector)
+
+#### Architecture
+```
+Kafka Topic: order-events
+        │
+        ▼
+Kafka Connect Worker (Docker: kafka-connect:8083)
+  ├── Connector: order-events-jdbc-sink
+  │   ├── reads order-events topic (3 partitions)
+  │   ├── applies Flatten transform (nested JSON → flat columns)
+  │   └── upserts to PostgreSQL: order_events_sink table
+  │
+  └── Internal state (Kafka topics):
+      ├── connect-configs  — connector configuration
+      ├── connect-offsets  — per-partition read offsets (fault tolerant)
+      └── connect-status   — connector + task health
+```
+
+#### Connector Config
+```json
+{
+  "connector.class": "io.confluent.connect.jdbc.JdbcSinkConnector",
+  "topics": "order-events",
+  "connection.url": "jdbc:postgresql://postgres:5432/paymentdb",
+  "auto.create": "true",
+  "insert.mode": "upsert",
+  "pk.mode": "record_value",
+  "pk.fields": "orderId",
+  "table.name.format": "order_events_sink",
+  "transforms": "flatten",
+  "transforms.flatten.type": "Flatten$Value",
+  "transforms.flatten.delimiter": "_"
+}
+```
+
+#### Database Table (auto-created)
+```sql
+-- Auto-created by Kafka Connect when first message arrives
+-- Columns are derived from the flattened JSON fields
+CREATE TABLE order_events_sink (
+    "order_orderId"      VARCHAR PRIMARY KEY,  ← pk.fields = orderId
+    "order_customerId"   VARCHAR,
+    "order_productName"  VARCHAR,
+    "order_price"        NUMERIC,
+    "order_quantity"     INT,
+    "order_status"       VARCHAR,
+    "eventId"            VARCHAR,
+    "eventType"          VARCHAR,
+    ...
+);
+```
+
+---
+
+### SSL/SASL Security (Phase 3)
+
+#### SASL/PLAIN Architecture
+```
+Kafka Broker
+  └── JAAS config: kafka_server_jaas.conf
+      └── KafkaServer { PlainLoginModule
+              user_order-service="order-secret"
+              user_payment-service="payment-secret"
+              ...
+          }
+
+Client (any service)
+  └── application.yml:
+      security.protocol: SASL_PLAINTEXT
+      sasl.mechanism: PLAIN
+      sasl.jaas.config: PlainLoginModule username="order-service" password="order-secret"
+```
+
+#### Files
+```
+security-config/
+├── kafka_server_jaas.conf     ← broker credentials (one per service)
+├── docker-compose-sasl.yml    ← Kafka with SASL_PLAINTEXT listeners
+├── application-sasl.yml       ← Spring Boot config snippet for all services
+└── README.md                  ← SASL vs SSL, production hardening guide
+```
+
+---
+
 ### Kafka Topics — Full Reference
 
 | Topic | Partitions | Key | Producer | Consumers | Purpose |
 |---|---|---|---|---|---|
-| order-events | 3 | customerId | order-service | payment, shipping, audit | Main event stream |
+| order-events | 3 | customerId | order-service | payment, shipping, audit, kafka-connect | Main event stream |
+| order-confirmed-events | 3 | customerId | order-service (TX) | — | Atomic TX partner topic |
 | order-events-retry-0 | 1 | — | Spring auto | payment-service | Retry attempt 1 |
 | order-events-retry-1 | 1 | — | Spring auto | payment-service | Retry attempt 2 |
 | order-events-retry-2 | 1 | — | Spring auto | payment-service | Retry attempt 3 |
 | order-events-dlt | 1 | — | Spring auto | dlt-handler-service | Failed messages |
+| avro-order-events | 1 | customerId | avro-service | avro-service | Avro binary messages |
+| order-count-per-customer | 1 | customerId | audit-service (Streams) | — | Running order count |
+| revenue-per-product | 1 | productName | audit-service (Streams) | — | Running revenue total |
 
 ---
 
@@ -358,9 +617,12 @@ CREATE TABLE payment_records (
 | shipping-service | 8083 |
 | audit-service | 8084 |
 | dlt-handler-service | 8085 |
+| avro-service | 8086 |
 | Kafka | 9092 |
 | Zookeeper | 2181 |
+| Schema Registry | 8091 |
 | Kafka UI | 8080 |
+| Kafka Connect | 8083 (Docker) |
 | PostgreSQL | 5432 |
 | Zipkin | 9411 |
 | Elasticsearch | 9200 |

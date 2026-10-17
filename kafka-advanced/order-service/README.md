@@ -66,7 +66,7 @@ kafkaTemplate.send(topic, orderEventDTO.getOrder().getCustomerId(), orderEventDT
 
 ## API
 
-### Place Order
+### Place Order (standard)
 ```
 POST http://localhost:8081/api/v1/orders
 Content-Type: application/json
@@ -87,6 +87,30 @@ Order placed successfully — ID: <uuid>
 
 ---
 
+### Place Order (transactional)
+```
+POST http://localhost:8081/api/v1/orders/transactional
+Content-Type: application/json
+
+{
+    "customerId": "CUST-001",
+    "productName": "Laptop",
+    "quantity": 1,
+    "price": 1299.99
+}
+```
+
+Sends `ORDER_PLACED` to `order-events` AND `ORDER_CONFIRMED` to `order-confirmed-events` atomically.
+Either both topics receive the message or neither does.
+See [KAFKA_TRANSACTIONS.md](./KAFKA_TRANSACTIONS.md) for details.
+
+**Response:**
+```
+Transactional order committed — ID: <uuid> | Check both 'order-events' and 'order-confirmed-events' topics
+```
+
+---
+
 ## Project Structure
 
 ```
@@ -94,11 +118,12 @@ order-service/
 └── src/main/java/com/mateen/orderservice/
     ├── OrderServiceApplication.java
     ├── controller/
-    │   └── OrderController.java       # POST /api/v1/orders
+    │   └── OrderController.java            # POST /api/v1/orders + /transactional
     ├── kafka/
-    │   └── OrderKafkaProducer.java    # Idempotent producer + partition by customerId
+    │   ├── OrderKafkaProducer.java         # Idempotent producer + partition by customerId
+    │   └── TransactionalOrderService.java  # executeInTransaction() → atomic dual-topic write
     └── config/
-        └── KafkaTopicConfig.java      # Creates order-events topic (3 partitions)
+        └── KafkaTopicConfig.java           # Creates order-events + order-confirmed-events topics
 ```
 
 ---
