@@ -1,0 +1,62 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: order-service
+
+# ──────────────────────────────────────────────
+# Kafka — Producer Configuration
+# ──────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    topic:
+      order-events: order-events    # Topic name used by KafkaTopicConfig and producer
+
+    producer:
+      bootstrap-servers: localhost:9092
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+      properties:
+        # IDEMPOTENT PRODUCER — prevents duplicate messages on retry
+        # Kafka assigns a sequence number to each message.
+        # If the same message arrives twice (due to network retry), Kafka discards the duplicate.
+        enable.idempotence: true
+
+        # Required when idempotence is enabled — ensures all replicas confirm before ACK
+        acks: all
+
+        # Max retry attempts when sending fails
+        retries: 3
+
+        # Max in-flight requests per connection — must be 1 or 5 when idempotence is ON
+        # 5 is the max allowed with idempotence and still guarantees ordering
+        max.in.flight.requests.per.connection: 5
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8081
+
+# ──────────────────────────────────────────────
+# Actuator
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# ──────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.mateen: DEBUG
