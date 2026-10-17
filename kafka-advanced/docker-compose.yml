@@ -34,7 +34,28 @@ services:
       - kafka-advanced-net
 
   # ──────────────────────────────────────────────
+  # Schema Registry — Centralized Avro schema storage
+  # Producers register schemas here before sending.
+  # Consumers fetch schemas to deserialize messages.
+  # http://localhost:8091
+  # ──────────────────────────────────────────────
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.6.0
+    container_name: schema-registry
+    ports:
+      - "8091:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    depends_on:
+      - kafka
+    networks:
+      - kafka-advanced-net
+
+  # ──────────────────────────────────────────────
   # Kafka UI — Visual topic & consumer group browser
+  # Also shows Schema Registry subjects and schemas
   # http://localhost:8080
   # ──────────────────────────────────────────────
   kafka-ui:
@@ -45,8 +66,10 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: kafka-advanced
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
     depends_on:
       - kafka
+      - schema-registry
     networks:
       - kafka-advanced-net
 

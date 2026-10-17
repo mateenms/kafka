@@ -1,0 +1,53 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: avro-service
+
+# ──────────────────────────────────────────────
+# Kafka — Avro Producer + Consumer Configuration
+# ──────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    # Confluent Schema Registry URL
+    # The serializer/deserializer talks to this to register and fetch schemas
+    # Configured in AvroKafkaProducerConfig and AvroKafkaConsumerConfig
+    schema-registry-url: http://localhost:8091
+
+    topic:
+      # Dedicated topic for Avro-serialized messages
+      # Messages in this topic are binary (not readable as plain JSON)
+      avro-order-events: avro-order-events
+
+    consumer:
+      group-id: avro-service-group
+      auto-offset-reset: earliest
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8086
+
+# ──────────────────────────────────────────────
+# Actuator
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# ──────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.mateen: DEBUG
+    io.confluent: WARN

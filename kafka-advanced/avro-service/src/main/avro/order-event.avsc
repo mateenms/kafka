@@ -1,0 +1,63 @@
+{
+  "type": "record",
+  "name": "OrderEvent",
+  "namespace": "com.mateen.avro",
+  "doc": "Avro schema for an order event. Used to validate and serialize messages between order producer and consumers.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": "string",
+      "doc": "Unique ID for this event (UUID)"
+    },
+    {
+      "name": "eventType",
+      "type": {
+        "type": "enum",
+        "name": "OrderEventType",
+        "symbols": ["ORDER_PLACED", "ORDER_CONFIRMED", "ORDER_CANCELLED", "ORDER_FAILED"]
+      },
+      "doc": "Type of order event"
+    },
+    {
+      "name": "orderId",
+      "type": "string",
+      "doc": "The order this event belongs to"
+    },
+    {
+      "name": "customerId",
+      "type": "string",
+      "doc": "Customer who placed the order — used as partition key"
+    },
+    {
+      "name": "productName",
+      "type": "string",
+      "doc": "Name of the product ordered"
+    },
+    {
+      "name": "quantity",
+      "type": "int",
+      "doc": "How many units ordered"
+    },
+    {
+      "name": "price",
+      "type": "string",
+      "doc": "Price as string to avoid floating point issues (e.g. '1299.99')"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "doc": "Current order status"
+    },
+    {
+      "name": "message",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Optional message — null by default (schema evolution example: nullable field)"
+    },
+    {
+      "name": "createdAt",
+      "type": "string",
+      "doc": "ISO-8601 timestamp when the event was created"
+    }
+  ]
+}
