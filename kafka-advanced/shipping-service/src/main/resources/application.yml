@@ -1,0 +1,49 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: shipping-service
+
+# ──────────────────────────────────────────────
+# Kafka — Consumer Configuration
+# ──────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    topic:
+      order-events: order-events
+
+    consumer:
+      group-id: shipping-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8083
+
+# ──────────────────────────────────────────────
+# Actuator
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# ──────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.mateen: DEBUG

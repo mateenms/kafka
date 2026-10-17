@@ -1,0 +1,77 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: payment-service
+
+# ──────────────────────────────────────────────
+# Kafka — Consumer Configuration
+# ──────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    topic:
+      order-events: order-events    # Topic this service consumes from
+
+    consumer:
+      group-id: payment-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        # Trust all packages so OrderEventDTO from base-domain can be deserialized
+        spring.json.trusted.packages: "*"
+
+    # Retry topics are auto-created by @RetryableTopic:
+    # order-events-retry-0  ← first retry (after 1s)
+    # order-events-retry-1  ← second retry (after 2s)
+    # order-events-retry-2  ← third retry (after 4s)
+    # order-events-dlt      ← dead letter topic (after all retries fail)
+    producer:
+      bootstrap-servers: localhost:9092
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+
+# ──────────────────────────────────────────────
+# Datasource — PostgreSQL
+# ──────────────────────────────────────────────
+  datasource:
+    url: jdbc:postgresql://localhost:5432/paymentdb
+    driver-class-name: org.postgresql.Driver
+    username: postgres
+    password: postgres
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8082
+
+# ──────────────────────────────────────────────
+# Actuator
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+# ──────────────────────────────────────────────
+# Logging
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.mateen: DEBUG
