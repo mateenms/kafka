@@ -1,0 +1,57 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: notification-service   # Used as service_name in Kibana logs and Zipkin traces
+
+# ──────────────────────────────────────────────
+# Kafka — Message Broker
+# ──────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: localhost:9092   # Kafka broker
+    topic:
+      name: order_topic
+    consumer:
+      group-id: notification-service-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8082   # notification-service runs on 8082 | order=8081 | inventory=8083
+
+# ──────────────────────────────────────────────
+# Actuator — Health & Metrics Endpoints
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: always
+
+  # ── Distributed Tracing (Micrometer + Brave) ──
+  tracing:
+    sampling:
+      probability: 1.0
+
+  # ── Zipkin — Trace Exporter ──
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans
+
+# ──────────────────────────────────────────────
+# Logging Levels
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO
+    com.mateen: DEBUG

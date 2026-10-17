@@ -1,0 +1,77 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: inventory-service   # Used as service_name in Kibana logs and Zipkin traces
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# Datasource — H2 In-Memory (dev only)
+# ──────────────────────────────────────────────
+  datasource:
+    url: jdbc:postgresql://localhost:5432/inventorydb
+    driver-class-name: org.postgresql.Driver
+    username: postgres
+    password: postgres
+  jpa:
+    hibernate:
+      ddl-auto: update             # Creates tables if not exist, updates schema
+    show-sql: true
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+
+# ──────────────────────────────────────────────
+# Kafka — Message Broker
+# ──────────────────────────────────────────────
+  kafka:
+    topic:
+      name: order_topic
+    bootstrap-servers: localhost:9092   # Kafka broker (docker-compose)
+    consumer:
+      group-id: inventory-service-group
+      auto-offset-reset: earliest       # Read from beginning if no offset stored
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: "*"
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8083   # inventory-service runs on 8083 | order=8081 | email=8082
+
+# ──────────────────────────────────────────────
+# Actuator — Health & Metrics Endpoints
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics   # Exposed at /actuator/health, /actuator/metrics
+  endpoint:
+    health:
+      show-details: always             # Shows DB, Kafka, disk status in health response
+
+  # ── Distributed Tracing (Micrometer + Brave) ──
+  tracing:
+    sampling:
+      probability: 1.0   # 1.0 = trace every request (use 0.1 in production = 10%)
+
+  # ── Zipkin — Trace Exporter ──
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans   # Zipkin UI: http://localhost:9411
+
+# ──────────────────────────────────────────────
+# Logging Levels
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO              # Default level for all packages
+    com.mateen: DEBUG       # Verbose logs for our own code during development

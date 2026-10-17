@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: kafka01
+  kafka:
+    bootstrap-servers:
+      - localhost:9094
+    topic: myTopic
+    json-topic: secondTopic
+    consumer:
+      bootstrap-servers:
+        - localhost:9094
+      group-id: myGroup
+      json-group-id: jsonUserGroup
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    producer:
+      bootstrap-servers:
+        - localhost:9094
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+# Use 8081 because port 8080 is already occupied.
+server:
+  port: 8081

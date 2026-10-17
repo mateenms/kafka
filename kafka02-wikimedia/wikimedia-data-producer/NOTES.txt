@@ -1,0 +1,269 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║              WIKIMEDIA DATA PRODUCER — PROJECT NOTES                ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+WHAT THIS PROJECT DOES (SIMPLE EXPLANATION)
+────────────────────────────────────────────
+Wikipedia gets edited thousands of times every minute. Wikimedia publishes
+every single one of those edits as a live stream that anyone can connect to.
+This project reads that live stream and saves each edit event into Kafka so
+other applications can process it later.
+
+Think of it as a data pipe:
+
+    Wikipedia edits  →  this app  →  Kafka
+
+This is the FIRST HALF of a larger data pipeline. The second half would be
+a Kafka consumer — a separate app that reads the stored messages and does
+something with them (count edits per user, detect bots, build dashboards, etc.).
+
+
+UNDERSTANDING THE THREE PIECES
+───────────────────────────────
+
+1. THE DATA SOURCE — Wikimedia EventStreams API
+
+   Wikimedia runs a public URL that broadcasts a continuous stream of events:
+
+       https://stream.wikimedia.org/v2/stream/recentchange
+
+   Every time someone edits a Wikipedia page, that URL pushes a JSON message
+   to anyone listening. This is called SSE (Server-Sent Events) — it works
+   like a radio station: you tune in once and it keeps broadcasting non-stop.
+
+   Each event looks like this:
+       {
+         "type": "edit",
+         "wiki": "enwiki",
+         "title": "Python (programming language)",
+         "user": "SomeEditor",
+         "timestamp": 1729033200,
+         "bot": false
+       }
+
+2. THIS APP — the Producer
+
+   The app connects to the Wikimedia URL, listens to the stream, and for
+   every event it receives it pushes the JSON into Kafka. Two classes do this:
+
+   • WikimediaChangesProducer
+       - Opens the HTTP connection to Wikimedia
+       - Sets the required User-Agent header (your email)
+       - Keeps the connection alive for the configured duration
+
+   • WikimediaChangesHandler
+       - Receives each event that arrives from the stream
+       - Calls kafkaTemplate.send(topic, json) to store it in Kafka
+
+3. THE DESTINATION — Apache Kafka
+
+   Kafka is a message queue (message broker). Think of it like a logbook:
+   every edit event gets written into a "chapter" called a topic
+   (wikimedia-recent-change). Other applications (consumers) can read from
+   that topic whenever they want, in order, at their own pace — even hours
+   later.
+
+
+STEP-BY-STEP FLOW
+─────────────────
+
+   Step 1:  Spring Boot starts — application context loads all beans.
+
+   Step 2:  KafkaTopicConfig tells Kafka to create the topic
+            "wikimedia-recent-change" if it does not exist yet.
+
+   Step 3:  CommandLineRunner calls WikimediaChangesProducer.startStream().
+
+   Step 4:  WikimediaChangesProducer opens an HTTP connection to
+            stream.wikimedia.org and sends a User-Agent header.
+
+   Step 5:  Wikimedia starts pushing JSON events down that connection —
+            one JSON object per Wikipedia edit, continuously.
+
+   Step 6:  WikimediaChangesHandler receives each event and calls
+            kafkaTemplate.send("wikimedia-recent-change", json).
+
+   Step 7:  Kafka stores the message — it is now available for any
+            consumer application to read.
+
+   Step 8:  After 1 minute the stream closes and the app shuts down
+            gracefully, flushing any pending Kafka messages first.
+
+
+WHY THE USER-AGENT MATTERS
+───────────────────────────
+Wikimedia's policy says: identify yourself or we block you. The User-Agent
+HTTP header is how you identify your application. When it contains a
+placeholder value (set-a-real-url-or-email), Wikimedia returns HTTP 403
+Forbidden. With a real email address, Wikimedia allows the connection.
+
+  → Always set a real email in application.yaml before running.
+
+
+ARCHITECTURE DIAGRAM
+────────────────────
+
+  ┌────────────────────────────────────────┐
+  │       Wikimedia EventStreams API        │
+  │  (broadcasts a JSON event per edit)    │
+  └──────────────────┬─────────────────────┘
+                     │  SSE — HTTP long-lived connection
+                     │  pushes JSON events continuously
+                     ▼
+  ┌────────────────────────────────────────┐
+  │       WikimediaChangesProducer         │
+  │  • Opens BackgroundEventSource         │
+  │  • Sends User-Agent header             │
+  │  • Keeps stream open for N minutes     │
+  └──────────────────┬─────────────────────┘
+                     │  onMessage(event, json)
+                     ▼
+  ┌────────────────────────────────────────┐
+  │       WikimediaChangesHandler          │
+  │  • onOpen()    → logs "Connected"      │
+  │  • onMessage() → kafkaTemplate.send()  │
+  │  • onError()   → logs error            │
+  │  • onClosed()  → logs "Disconnected"   │
+  └──────────────────┬─────────────────────┘
+                     │  produce record
+                     │  key=null, value=JSON string
+                     ▼
+  ┌────────────────────────────────────────┐
+  │       Apache Kafka (localhost:9094)    │
+  │       Topic: wikimedia-recent-change   │
+  │       1 partition · 1 replica          │
+  │       idempotent producer enabled      │
+  └────────────────────────────────────────┘
+
+
+PACKAGE STRUCTURE
+─────────────────
+
+  com.ms.wikimedia_data_producer
+  ├── WikimediaDataProducerApplication.java   Entry point + CommandLineRunner
+  ├── config/
+  │   └── KafkaTopicConfig.java               Auto-creates the Kafka topic
+  └── stream/
+      ├── WikimediaChangesProducer.java        SSE stream lifecycle
+      └── WikimediaChangesHandler.java         SSE → Kafka bridge
+
+
+KEY DESIGN DECISIONS
+────────────────────
+
+1. Constructor injection everywhere — avoids @Autowired field injection
+   and makes dependencies explicit and easier to test.
+
+2. WikimediaChangesHandler is NOT a Spring bean (@Component removed).
+   The LaunchDarkly API requires a plain handler instance at construction
+   time; letting Spring manage it would create an unused duplicate bean.
+
+3. Stream URL and User-Agent are externalised to application.yaml —
+   no hardcoded strings in source code, easy to change without recompiling.
+
+4. Idempotent Kafka producer enabled (enable.idempotence=true, acks=-1)
+   — prevents duplicate messages if the producer retries after a failure.
+
+5. STREAM_DURATION_MINUTES is a named constant — the number that controls
+   how long the app runs is visible and easy to change in one place.
+
+
+IMPORTANT NOTES
+───────────────
+• Wikimedia REQUIRES a valid User-Agent header with a real contact email
+  or project URL. Requests with a placeholder get HTTP 403. Edit
+  application.yaml before running.
+
+• The app is intentionally short-lived: it streams for N minutes and shuts
+  down. To run continuously, increase STREAM_DURATION_MINUTES or wrap the
+  startStream() call in a scheduler loop.
+
+• Kafka must be running on localhost:9094 before the app starts.
+  The topic is created automatically on first run.
+
+• When the stream disconnects and reconnects — that is normal. The
+  LaunchDarkly SSE client retries automatically with exponential backoff.
+
+
+
+
+
+
+What this project does
+Wikipedia gets edited thousands of times every minute. Wikimedia publishes every single edit as a live stream anyone can connect to. This project reads that live stream and saves each edit event into Kafka so other applications can process it later.
+
+Think of it as a data pipe:
+
+
+Wikipedia edits  →  this app  →  Kafka
+The three pieces
+1. The data source — Wikimedia EventStreams
+Wikimedia runs a public URL that sends you a continuous stream of events:
+
+
+https://stream.wikimedia.org/v2/stream/recentchange
+Every time someone edits a Wikipedia page, that URL pushes a JSON message to anyone listening. This is called SSE (Server-Sent Events) — it's like a radio station you tune into and it keeps broadcasting.
+
+2. This app — the producer
+The app connects to that URL, listens to the stream, and for every event it receives, it pushes the JSON into Kafka. Two classes do this work:
+
+WikimediaChangesProducer — opens the connection to Wikimedia and keeps it alive
+WikimediaChangesHandler — receives each event and sends it to Kafka
+3. The destination — Apache Kafka
+Kafka is a message queue. Think of it like a logbook: every edit event gets written into a "chapter" called a topic (wikimedia-recent-change). Other applications (consumers) can read from that topic whenever they want, in order, at their own speed.
+
+Step-by-step flow
+
+Step 1:  App starts on port 8081
+
+Step 2:  KafkaTopicConfig tells Kafka
+         "create a topic called wikimedia-recent-change
+          if it doesn't already exist"
+
+Step 3:  WikimediaChangesProducer opens an HTTP connection
+         to stream.wikimedia.org with your User-Agent header
+
+Step 4:  Wikimedia starts pushing JSON events down that connection
+         (one per Wikipedia edit, non-stop)
+
+Step 5:  WikimediaChangesHandler receives each event and calls
+         kafkaTemplate.send("wikimedia-recent-change", json)
+
+Step 6:  Kafka stores the message in the topic
+
+Step 7:  After 1 minute the stream closes and the app shuts down
+Why the User-Agent matters
+Wikimedia's rules say: "tell us who you are or we block you." The User-Agent header is how you identify yourself. When it had a placeholder (set-a-real-url-or-email), Wikimedia returned HTTP 403 (access denied) — that was the bug fixed at the start of this session. With a real email in there, it lets you through.
+
+Visual summary
+
+┌─────────────────────┐
+│   Wikipedia editors │  (thousands of people editing pages)
+└──────────┬──────────┘
+           │ each edit triggers an event
+           ▼
+┌─────────────────────┐
+│  Wikimedia API      │  broadcasts a live JSON stream
+│  (SSE endpoint)     │
+└──────────┬──────────┘
+           │ HTTP long-lived connection
+           ▼
+┌──────────────────────────────────────┐
+│  WikimediaChangesProducer            │
+│  • connects with User-Agent header   │
+│  • hands each event to the handler   │
+│                                      │
+│  WikimediaChangesHandler             │
+│  • receives the JSON payload         │
+│  • calls kafkaTemplate.send(...)     │
+└──────────┬───────────────────────────┘
+           │ produce message
+           ▼
+┌─────────────────────┐
+│  Kafka              │  stores every edit as a message
+│  topic:             │  other apps can read from here
+│  wikimedia-recent-  │
+│  change             │
+└─────────────────────┘
+The project is the first half of a larger pipeline. The second half would be a Kafka consumer — an app that reads those stored messages and does something with them (count edits per user, detect bot activity, build dashboards, etc.).

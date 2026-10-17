@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: wikimedia-data-producer
+  kafka:
+    bootstrap-servers: localhost:9094
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+
+wikimedia:
+  stream:
+    url: https://stream.wikimedia.org/v2/stream/recentchange
+    # Replace with a project URL or operator email before connecting to Wikimedia.
+    user-agent: "wikimedia-data-producer/0.0.1 (contact: javamateen@gmail.com) okhttp-eventsource/4.3.0"
+  kafka:
+    topic: wikimedia-recent-change
+
+
+server:
+  port: 8081

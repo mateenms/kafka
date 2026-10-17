@@ -1,0 +1,136 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║           WIKIMEDIA DATA CONSUMER — PROJECT NOTES                   ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+WHAT THIS PROJECT DOES (SIMPLE EXPLANATION)
+────────────────────────────────────────────
+This is the second half of the Wikimedia Kafka pipeline. It reads JSON
+messages that the producer wrote into Kafka and saves each one as a row
+in PostgreSQL so the data can be queried or analysed later.
+
+    Kafka (wikimedia-recent-change)  →  this app  →  PostgreSQL (mydb)
+
+
+STEP-BY-STEP FLOW
+─────────────────
+
+  Step 1:  Spring Boot starts on port 8083.
+
+  Step 2:  Hibernate connects to PostgreSQL (mydb) and auto-creates
+           the wikimedia_data table if it does not exist.
+
+  Step 3:  @KafkaListener in WikimediaChangesConsumer subscribes to
+           the topic wikimedia-recent-change in consumer group
+           wikimedia-consumer-group.
+
+  Step 4:  For every message on the topic, consume() is called with
+           the raw JSON string as the parameter.
+
+  Step 5:  A new WikiEventData entity is created, eventData is set to
+           the JSON string, and repository.save() persists it.
+
+  Step 6:  @PrePersist sets createdAt to the current timestamp
+           automatically before each INSERT.
+
+  Step 7:  Spring Kafka commits the Kafka offset after save() returns,
+           so the message is not reprocessed on restart.
+
+
+ARCHITECTURE DIAGRAM
+────────────────────
+
+  [Apache Kafka  localhost:9094]
+    Topic: wikimedia-recent-change
+          │  @KafkaListener
+          ▼
+  [WikimediaChangesConsumer]
+    • Receives raw JSON message from Kafka
+    • Creates a WikiEventData entity
+    • Calls repository.save(wikiEventData)
+          │  JPA → INSERT
+          ▼
+  [WikimediaDataRepository]
+    • extends JpaRepository<WikiEventData, Long>
+    • save() / findAll() / findById() provided by Spring Data
+          │  Hibernate SQL
+          ▼
+  [PostgreSQL  localhost:5432]
+    Database: mydb
+    Table:    wikimedia_data
+    Columns:  id (BIGSERIAL PK)
+              event_data (TEXT via @Lob)
+              created_at (TIMESTAMP)
+
+
+PACKAGE STRUCTURE
+─────────────────
+
+  com.ms.wikimedia_data_consumer
+  ├── WikimediaDataConsumerApplication.java   entry point
+  ├── entity/
+  │   └── WikiEventData.java                  JPA entity
+  ├── repository/
+  │   └── WikimediaDataRepository.java        Spring Data JPA repository
+  └── consumer/
+      └── WikimediaChangesConsumer.java        @KafkaListener → save
+
+
+KEY DESIGN DECISIONS
+────────────────────
+
+1. No KafkaConsumerConfig class — Spring Boot auto-configures the Kafka
+   consumer factory entirely from application.yaml when spring-boot-
+   starter-kafka is on the classpath. No boilerplate needed.
+
+2. @Lob on eventData — maps to PostgreSQL TEXT column (up to 1 GB).
+   Without it, Hibernate defaults to VARCHAR(255) which would truncate
+   the Wikimedia JSON payload.
+
+3. auto-offset-reset=earliest — on first start (no committed offset),
+   the consumer reads from the very beginning of the topic so no events
+   produced before this app started are missed.
+
+4. enable.auto.commit=false — Spring Kafka commits offsets after each
+   listener method returns successfully, preventing message loss on
+   restart or crash.
+
+5. ddl-auto=create-drop — Hibernate drops and recreates the schema on
+   every restart. Good for development. Change to "update" to keep
+   existing rows between restarts, or "none" for production.
+
+6. @PrePersist on createdAt — the timestamp is set automatically by
+   Hibernate just before each INSERT, no manual setting needed in
+   the consumer.
+
+
+DATABASE
+────────
+  Host:      localhost
+  Port:      5432
+  Database:  mydb
+  Username:  postgres
+  Password:  postgres
+  Table:     wikimedia_data
+
+  Create the database (one-time):
+    docker exec postgres psql -U postgres -c "CREATE DATABASE mydb;"
+
+  Query saved events:
+    SELECT id, created_at, LEFT(event_data, 120)
+    FROM wikimedia_data
+    ORDER BY created_at DESC
+    LIMIT 10;
+
+
+IMPORTANT NOTES
+───────────────
+• Start the producer BEFORE the consumer — the consumer reads from Kafka,
+  so Kafka must have messages for it to process.
+
+• The Kafka topic (wikimedia-recent-change) must exist before the consumer
+  starts. The producer's KafkaTopicConfig creates it automatically.
+
+• ddl-auto=create-drop drops the table on shutdown. All saved events are
+  lost when the app stops. Change to "update" to persist data across
+  restarts.

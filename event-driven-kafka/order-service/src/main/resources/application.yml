@@ -1,0 +1,78 @@
+# ──────────────────────────────────────────────
+# Application Identity
+# ──────────────────────────────────────────────
+spring:
+  application:
+    name: order-service   # Used as service_name in Kibana logs and Zipkin traces
+
+# ──────────────────────────────────────────────
+# Datasource — H2 In-Memory (dev only)
+# ──────────────────────────────────────────────
+  datasource:
+    url: jdbc:h2:mem:orderdb    # In-memory DB, wiped on restart
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+  h2:
+    console:
+      enabled: true             # H2 console at http://localhost:8081/h2-console
+  jpa:
+    hibernate:
+      ddl-auto: create-drop     # Auto creates schema on start, drops on stop
+    show-sql: false
+
+# ──────────────────────────────────────────────
+# Kafka — Message Broker
+# ──────────────────────────────────────────────
+  kafka:
+    bootstrap-servers: localhost:9092   # Kafka broker port
+    topic:
+      name: order_topic
+    producer:
+      bootstrap-servers: localhost:9092
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer        # Serializes message key as String
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer # Serializes message value as JSON
+#
+#    consumer:
+#      group-id: order-service-group
+#      auto-offset-reset: earliest                                                    # Read from beginning if no offset stored
+#      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer    # Deserializes message key as String
+#      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer # Deserializes message value from JSON
+#      properties:
+#        spring.json.trusted.packages: "*"   # Trust all packages for deserialization
+
+# ──────────────────────────────────────────────
+# Server Configuration
+# ──────────────────────────────────────────────
+server:
+  port: 8081   # order-service runs on 8081 | email=8082 | inventory=8083
+
+# ──────────────────────────────────────────────
+# Actuator — Health & Metrics Endpoints
+# ──────────────────────────────────────────────
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics   # Exposed at /actuator/health, /actuator/metrics
+  endpoint:
+    health:
+      show-details: always             # Shows DB, Kafka, disk status in health response
+
+  # ── Distributed Tracing (Micrometer + Brave) ──
+  tracing:
+    sampling:
+      probability: 1.0   # 1.0 = trace every request (use 0.1 in production = 10%)
+
+  # ── Zipkin — Trace Exporter ──
+  zipkin:
+    tracing:
+      endpoint: http://localhost:9411/api/v2/spans   # Zipkin UI: http://localhost:9411
+
+# ──────────────────────────────────────────────
+# Logging Levels
+# ──────────────────────────────────────────────
+logging:
+  level:
+    root: INFO              # Default level for all packages
+    com.mateen: DEBUG       # Verbose logs for our own code during development

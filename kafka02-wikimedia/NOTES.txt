@@ -1,0 +1,82 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║            kafka02-wikimedia — FULL PIPELINE NOTES                  ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+
+PURPOSE
+───────
+An end-to-end Kafka learning pipeline that streams real-time Wikipedia
+edit events from the Wikimedia public API all the way into a PostgreSQL
+database.
+
+    Wikimedia API → Producer → Kafka → Consumer → PostgreSQL
+
+
+TWO PROJECTS
+────────────
+
+  wikimedia-data-producer  (port 8081)
+    • Connects to the Wikimedia SSE stream
+    • Publishes each Wikipedia edit as a JSON message to Kafka
+
+  wikimedia-data-consumer  (port 8083)
+    • Reads messages from the Kafka topic
+    • Persists each event as a row in PostgreSQL (table: wikimedia_data)
+
+
+FULL ARCHITECTURE
+─────────────────
+
+  [Wikimedia EventStreams API]
+          │  SSE — continuous JSON stream
+          ▼
+  [wikimedia-data-producer :8081]
+    WikimediaChangesProducer  → opens SSE connection
+    WikimediaChangesHandler   → receives events, calls kafkaTemplate.send()
+          │  produce record (key=null, value=JSON)
+          ▼
+  [Apache Kafka  localhost:9094]
+    Topic: wikimedia-recent-change
+    1 partition · 1 replica · idempotent producer
+          │  @KafkaListener
+          ▼
+  [wikimedia-data-consumer :8083]
+    WikimediaChangesConsumer  → receives message, calls repository.save()
+    WikimediaDataRepository   → Spring Data JPA repository
+          │  INSERT
+          ▼
+  [PostgreSQL  localhost:5432]
+    Database: mydb
+    Table:    wikimedia_data
+    Columns:  id, event_data (@Lob TEXT), created_at
+
+
+INFRASTRUCTURE
+──────────────
+  Kafka broker:  localhost:9094  (Docker: apache/kafka)
+  PostgreSQL:    localhost:5432  (Docker: postgres)
+  Database:      mydb
+  Username:      postgres
+  Password:      postgres
+
+
+HOW TO RUN
+──────────
+  1. Start Docker containers (Kafka + PostgreSQL)
+  2. Run WikimediaDataProducerApplication  → port 8081
+  3. Run WikimediaDataConsumerApplication  → port 8083
+
+  Events will appear in the wikimedia_data table immediately.
+  Use DBeaver or psql to query: SELECT * FROM wikimedia_data;
+
+
+KEY DESIGN DECISIONS
+────────────────────
+  • Producer uses idempotent Kafka producer (acks=-1) to avoid duplicates
+  • Consumer uses auto-offset-reset=earliest to read from the beginning
+    on first start so no events are missed
+  • @Lob on eventData stores the full JSON as PostgreSQL TEXT (no size limit)
+  • ddl-auto=create-drop in dev — Hibernate recreates the table on each restart
+    (change to "update" or "none" for production)
+  • No Spring bean for KafkaConsumerConfig — Spring Boot auto-configures
+    the consumer factory from application.yaml
