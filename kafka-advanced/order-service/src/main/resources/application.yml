@@ -12,7 +12,9 @@ spring:
     bootstrap-servers: localhost:9092
 
     topic:
-      order-events: order-events    # Topic name used by KafkaTopicConfig and producer
+      order-events: order-events
+      # Confirmation topic — written atomically alongside order-events in a transaction
+      order-confirmed-events: order-confirmed-events
 
     producer:
       bootstrap-servers: localhost:9092
@@ -34,6 +36,12 @@ spring:
         # Max in-flight requests per connection — must be 1 or 5 when idempotence is ON
         # 5 is the max allowed with idempotence and still guarantees ordering
         max.in.flight.requests.per.connection: 5
+
+      # KAFKA TRANSACTIONS — enables transactional producer
+      # All sends within one transaction either ALL succeed or ALL fail (atomic)
+      # Each instance needs a unique suffix — Spring appends a counter automatically
+      # e.g. order-tx-0, order-tx-1 for multiple app instances
+      transaction-id-prefix: order-tx-
 
 # ──────────────────────────────────────────────
 # Server Configuration

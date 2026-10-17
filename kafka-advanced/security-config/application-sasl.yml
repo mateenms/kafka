@@ -1,0 +1,45 @@
+# ──────────────────────────────────────────────────────────────────
+# SASL/PLAIN Service Configuration
+# Add these properties to any service's application.yml when
+# connecting to a Kafka broker secured with SASL/PLAIN
+#
+# Each service uses its own username/password from kafka_server_jaas.conf
+# ──────────────────────────────────────────────────────────────────
+
+spring:
+  kafka:
+    bootstrap-servers: localhost:9092
+
+    # ── Producer SASL config ──
+    producer:
+      properties:
+        # Tell the producer to use SASL over plaintext
+        security.protocol: SASL_PLAINTEXT
+        # Use the PLAIN mechanism (username + password)
+        sasl.mechanism: PLAIN
+        # JAAS config inline — identifies this service to the broker
+        # Replace username/password with this service's credentials from kafka_server_jaas.conf
+        sasl.jaas.config: >
+          org.apache.kafka.common.security.plain.PlainLoginModule required
+          username="order-service"
+          password="order-secret";
+
+    # ── Consumer SASL config ──
+    consumer:
+      properties:
+        security.protocol: SASL_PLAINTEXT
+        sasl.mechanism: PLAIN
+        sasl.jaas.config: >
+          org.apache.kafka.common.security.plain.PlainLoginModule required
+          username="payment-service"
+          password="payment-secret";
+
+    # ── Admin client (for Kafka Streams, AdminClient) ──
+    admin:
+      properties:
+        security.protocol: SASL_PLAINTEXT
+        sasl.mechanism: PLAIN
+        sasl.jaas.config: >
+          org.apache.kafka.common.security.plain.PlainLoginModule required
+          username="admin"
+          password="admin-secret";

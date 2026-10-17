@@ -1,0 +1,77 @@
+version: '3.8'
+
+# ────────────────────────────────────────────────────────────────
+# SASL/PLAIN Security Demo
+# Run with: docker-compose -f docker-compose-sasl.yml up -d
+#
+# This replaces the default docker-compose.yml for security testing.
+# All services connect using username/password (SASL/PLAIN).
+# ────────────────────────────────────────────────────────────────
+
+services:
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper-sasl
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - kafka-sasl-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka-sasl
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper-sasl:2181
+
+      # Two listeners:
+      #   SASL_PLAINTEXT — for clients (port 9092) — requires SASL auth
+      #   PLAINTEXT       — for internal broker-to-broker (port 29092) — no auth needed
+      KAFKA_LISTENERS: SASL_PLAINTEXT://0.0.0.0:9092,PLAINTEXT://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: SASL_PLAINTEXT://localhost:9092,PLAINTEXT://kafka-sasl:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: SASL_PLAINTEXT:SASL_PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+
+      # SASL mechanism for client connections
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+      # Mount the JAAS config file into the broker JVM
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/kafka_server_jaas.conf"
+
+    volumes:
+      # Mount our JAAS config into the container
+      - ./kafka_server_jaas.conf:/etc/kafka/kafka_server_jaas.conf
+
+    depends_on:
+      - zookeeper
+    networks:
+      - kafka-sasl-net
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui-sasl
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: kafka-sasl
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka-sasl:9092
+      # Tell Kafka UI to authenticate with SASL
+      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: PLAIN
+      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: "org.apache.kafka.common.security.plain.PlainLoginModule required username='admin' password='admin-secret';"
+    depends_on:
+      - kafka
+    networks:
+      - kafka-sasl-net
+
+networks:
+  kafka-sasl-net:
+    driver: bridge

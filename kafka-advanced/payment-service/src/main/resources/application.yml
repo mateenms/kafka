@@ -22,6 +22,11 @@ spring:
       properties:
         # Trust all packages so OrderEventDTO from base-domain can be deserialized
         spring.json.trusted.packages: "*"
+        # KAFKA TRANSACTIONS — read_committed isolation
+        # Only reads messages from COMMITTED transactions
+        # Without this: consumer would see messages from aborted/in-flight transactions too
+        # Default is read_uncommitted — change to read_committed when using transactional producers
+        isolation.level: read_committed
 
     # Retry topics are auto-created by @RetryableTopic:
     # order-events-retry-0  ← first retry (after 1s)

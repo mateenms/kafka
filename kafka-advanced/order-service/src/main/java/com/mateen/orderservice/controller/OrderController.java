@@ -5,6 +5,7 @@ import com.basedomain.dto.OrderEventDTO;
 import com.basedomain.enums.OrderEventType;
 import com.basedomain.enums.OrderStatus;
 import com.mateen.orderservice.kafka.OrderKafkaProducer;
+import com.mateen.orderservice.kafka.TransactionalOrderService;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +23,7 @@ public class OrderController {
     private static final Logger LOGGER = LoggerFactory.getLogger(OrderController.class);
 
     private final OrderKafkaProducer orderKafkaProducer;
+    private final TransactionalOrderService transactionalOrderService;
 
     @PostMapping
     public ResponseEntity<String> placeOrder(@RequestBody OrderDTO orderDTO) {
@@ -46,5 +48,22 @@ public class OrderController {
                 orderDTO.getOrderId(), orderDTO.getCustomerId(), orderDTO.getProductName());
 
         return ResponseEntity.ok("Order placed successfully — ID: " + orderDTO.getOrderId());
+    }
+
+    /**
+     * POST /api/v1/orders/transactional
+     *
+     * Sends ORDER_PLACED to order-events AND ORDER_CONFIRMED to order-confirmed-events
+     * inside a single Kafka transaction. Both messages commit atomically.
+     *
+     * Consumers with isolation.level=read_committed only see these messages
+     * AFTER the transaction is committed — never partial writes.
+     */
+    @PostMapping("/transactional")
+    public ResponseEntity<String> placeOrderTransactionally(@RequestBody OrderDTO orderDTO) {
+        LOGGER.info("Transactional order request — customer: {}", orderDTO.getCustomerId());
+        String orderId = transactionalOrderService.sendTransactionally(orderDTO);
+        return ResponseEntity.ok("Transactional order committed — ID: " + orderId
+                + " | Check both 'order-events' and 'order-confirmed-events' topics");
     }
 }
